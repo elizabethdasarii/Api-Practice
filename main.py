@@ -12,6 +12,9 @@ class LocationRequest(BaseModel):
     latitude: float
     longitude: float
 
+class BookRequest(BaseModel):
+    title: str
+
 def verify_api_key(x_api_key: str = Header(...)):
     if x_api_key != os.environ["MY_API_KEY"]:
         raise HTTPException(status_code=401, detail="Invalid API key")
@@ -87,4 +90,61 @@ def weather_advice(request: LocationRequest):
     return {
         "raw_weather": current,
         "advice": advice
+    }
+
+@app.post("/book-summary")
+def book_summary(request: BookRequest, auth: None = Depends(verify_api_key)):
+    search_url = "https://openlibrary.org/search.json"
+    search_response = requests.get(search_url, params={"q": request.title})
+
+    if search_response.status_code != 200:
+        return {"error": "Failed to search books", "details": search_response.text}
+
+    search_data = search_response.json()
+    if not search_data["docs"]:
+        return {"error": "No books found for that title"}
+
+    first_result = search_data["docs"][0]
+    work_key = first_result["key"]
+    found_title = first_result["title"]
+
+    work_url = f"https://openlibrary.org{work_key}.json"
+    work_response = requests.get(work_url)
+
+    if work_response.status_code != 200:
+        return {"error": "Failed to fetch work details", "details": work_response.text}
+
+    work_data = work_response.json()
+    author_key = work_data["authors"][0]["author"]["key"]
+
+    author_url = f"https://openlibrary.org{author_key}.json"
+    author_response = requests.get(author_url)
+
+    if author_response.status_code != 200:
+        return {"error": "Failed to fetch author details", "details": author_response.text}
+
+    author_data = author_response.json()
+    author_name = author_data["name"]
+
+    openai_url = "https://api.openai.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
+        "Content-Type": "application/json"
+    }
+    prompt = f"In one short, friendly sentence, recommend the book '{found_title}' by {author_name} to a potential reader."
+    body = {
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": prompt}]
+    }
+    openai_response = requests.post(openai_url, headers=headers, json=body)
+
+    if openai_response.status_code != 200:
+        return {"error": "Failed to get recommendation", "details": openai_response.json()}
+
+    recommendation = openai_response.json()["choices"][0]["message"]["content"]
+
+    return {
+        "title": found_title,
+        "author": author_name,
+        "recommendation": recommendation
     }
